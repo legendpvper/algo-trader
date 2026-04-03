@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AlgoTrader — AI Stock Signal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.plot.ly/plotly-2.26.0.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg0:     #060d1a;
+    --bg1:     #0f172a;
+    --bg2:     #1e293b;
+    --bg3:     #273449;
+    --border:  #2d3f55;
+    --text0:   #e2e8f0;
+    --text1:   #94a3b8;
+    --text2:   #64748b;
+    --accent:  #38bdf8;
+    --green:   #4ade80;
+    --red:     #f87171;
+    --blue:    #60a5fa;
+    --amber:   #fbbf24;
+    --mono:    'IBM Plex Mono', monospace;
+    --sans:    'IBM Plex Sans', sans-serif;
+  }
+
+  html, body {
+    min-height: 100vh;
+    background: var(--bg0);
+    color: var(--text0);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.6;
+  }
+
+  /* scanline texture */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg, transparent, transparent 2px,
+      rgba(0,0,0,0.04) 2px, rgba(0,0,0,0.04) 4px
+    );
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  header {
+    border-bottom: 1px solid var(--border);
+    padding: 1.2rem 2rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    background: var(--bg1);
+  }
+  .logo {
+    font-family: var(--mono);
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--accent);
+    letter-spacing: 0.05em;
+  }
+  .logo span { color: var(--text1); font-weight: 300; }
+  .status-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 6px var(--green);
+    animation: pulse 2s infinite;
+    margin-left: auto;
+  }
+  .status-label { font-family: var(--mono); font-size: 11px; color: var(--text2); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  main { max-width: 1200px; margin: 0 auto; padding: 2rem 1.5rem; }
+
+  /* ── Control bar */
+  .controls {
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    margin-bottom: 2rem;
+    background: var(--bg1);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem 1.5rem;
+  }
+  .ctrl-group { display: flex; flex-direction: column; gap: 5px; }
+  .ctrl-group label {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    color: var(--text2);
+    text-transform: uppercase;
+  }
+  .ctrl-group input, .ctrl-group select {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text0);
+    font-family: var(--mono);
+    font-size: 14px;
+    padding: 8px 12px;
+    outline: none;
+    transition: border-color 0.2s;
+    min-width: 140px;
+  }
+  .ctrl-group input:focus, .ctrl-group select:focus { border-color: var(--accent); }
+  .ctrl-group select option { background: var(--bg2); }
+
+  .run-btn {
+    background: var(--accent);
+    color: #060d1a;
+    border: none;
+    border-radius: 6px;
+    padding: 9px 24px;
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    letter-spacing: 0.05em;
+    transition: all 0.15s;
+    align-self: flex-end;
+    white-space: nowrap;
+  }
+  .run-btn:hover { background: #7dd3fc; transform: translateY(-1px); }
+  .run-btn:active { transform: translateY(0); }
+  .run-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+  /* ── Signal banner */
+  .signal-banner {
+    border-radius: 12px;
+    padding: 1.5rem 2rem;
+    margin-bottom: 1.5rem;
+    border: 1px solid;
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    animation: fadeIn 0.4s ease;
+  }
+  @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
+  .signal-badge {
+    font-family: var(--mono);
+    font-size: 1.6rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    padding: 0.4rem 1.2rem;
+    border-radius: 8px;
+    border: 2px solid;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .signal-info { flex: 1; }
+  .signal-title {
+    font-family: var(--mono);
+    font-size: 1rem;
+    color: var(--text1);
+    margin-bottom: 0.3rem;
+  }
+  .signal-reason { font-size: 14px; color: var(--text1); line-height: 1.6; }
+
+  /* ── Metric cards grid */
+  .metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 10px;
+    margin-bottom: 1.5rem;
+  }
+  .metric {
+    background: var(--bg1);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem 1.2rem;
+    animation: fadeIn 0.4s ease;
+  }
+  .metric-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text2);
+    margin-bottom: 6px;
+  }
+  .metric-value {
+    font-family: var(--mono);
+    font-size: 1.4rem;
+    font-weight: 500;
+    color: var(--text0);
+  }
+  .metric-sub { font-size: 12px; color: var(--text2); margin-top: 3px; }
+  .up { color: var(--green) !important; }
+  .dn { color: var(--red)   !important; }
+
+  /* ── Chart */
+  #chart-wrap {
+    background: var(--bg1);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1rem;
+    margin-bottom: 1.5rem;
+    animation: fadeIn 0.5s ease;
+  }
+  #chart { width: 100%; height: 620px; }
+
+  /* ── Feature table */
+  .table-card {
+    background: var(--bg1);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    margin-bottom: 1.5rem;
+    animation: fadeIn 0.5s ease;
+  }
+  .table-head {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text2);
+    padding: 0.8rem 1.25rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg2);
+  }
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text2);
+    padding: 0.6rem 1.25rem;
+    text-align: left;
+    background: var(--bg2);
+    font-weight: 400;
+    border-bottom: 1px solid var(--border);
+  }
+  th:not(:first-child) { text-align: right; }
+  td {
+    padding: 0.65rem 1.25rem;
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text1);
+    border-bottom: 1px solid var(--bg2);
+  }
+  td:not(:first-child) { text-align: right; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--bg2); }
+
+  /* ── Loading / error states */
+  .placeholder {
+    text-align: center;
+    padding: 5rem 2rem;
+    color: var(--text2);
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+  .placeholder .icon { font-size: 2.5rem; margin-bottom: 1rem; opacity: 0.4; }
+  .error-msg {
+    background: rgba(248,113,113,0.08);
+    border: 1px solid rgba(248,113,113,0.3);
+    border-radius: 10px;
+    padding: 1rem 1.5rem;
+    color: var(--red);
+    font-family: var(--mono);
+    font-size: 13px;
+    margin-bottom: 1rem;
+  }
+
+  /* spinner */
+  .spinner {
+    width: 32px; height: 32px;
+    border: 2px solid var(--bg3);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    margin: 0 auto 1rem;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  footer {
+    text-align: center;
+    padding: 2rem;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text2);
+    border-top: 1px solid var(--border);
+    margin-top: 2rem;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">ALGO<span>TRADER</span></div>
+  <div style="font-size:12px;color:var(--text2);font-family:var(--mono);">AI · Linear Regression · Next-day prediction</div>
+  <div style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+    <div class="status-dot"></div>
+    <span class="status-label">LIVE DATA</span>
+  </div>
+</header>
+
+<main>
+  <!-- Controls -->
+  <div class="controls">
+    <div class="ctrl-group">
+      <label>Ticker symbol</label>
+      <input id="ticker" type="text" value="AAPL" placeholder="e.g. AAPL" maxlength="6"
+             style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase()">
+    </div>
+    <div class="ctrl-group">
+      <label>Quick select</label>
+      <select id="quick" onchange="document.getElementById('ticker').value=this.value">
+        <option value="">— pick a stock —</option>
+        <option value="AAPL">AAPL — Apple</option>
+        <option value="MSFT">MSFT — Microsoft</option>
+        <option value="GOOGL">GOOGL — Alphabet</option>
+        <option value="NVDA">NVDA — NVIDIA</option>
+        <option value="TSLA">TSLA — Tesla</option>
+        <option value="AMZN">AMZN — Amazon</option>
+        <option value="META">META — Meta</option>
+        <option value="SPY">SPY — S&amp;P 500 ETF</option>
+      </select>
+    </div>
+    <div class="ctrl-group">
+      <label>History window</label>
+      <select id="window">
+        <option value="60">60 trading days</option>
+        <option value="90" selected>90 trading days</option>
+        <option value="120">120 trading days</option>
+      </select>
+    </div>
+    <button class="run-btn" id="runBtn" onclick="runModel()">▶ RUN MODEL</button>
+  </div>
+
+  <!-- Results -->
+  <div id="results">
+    <div class="placeholder">
+      <div class="icon">📈</div>
+      Enter a ticker and press <strong>Run Model</strong> to get a real-time AI trading signal.
+    </div>
+  </div>
+</main>
+
+<footer>
+  AlgoTrader · Linear Regression on real market data via Yahoo Finance ·
+  For educational purposes only · Not financial advice
+</footer>
+
+<script>
+async function runModel() {
+  const ticker = document.getElementById('ticker').value.trim().toUpperCase();
+  const window = document.getElementById('window').value;
+  const btn    = document.getElementById('runBtn');
+  if (!ticker) return;
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Fetching...';
+  document.getElementById('results').innerHTML = `
+    <div class="placeholder">
+      <div class="spinner"></div>
+      Fetching real market data for <strong>${ticker}</strong> and running model…
+    </div>`;
+
+  try {
+    const res  = await fetch('/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticker, window })
+    });
+    const json = await res.json();
+    if (!json.ok) throw new Error(json.error);
+    render(json.data);
+  } catch(e) {
+    document.getElementById('results').innerHTML =
+      `<div class="error-msg">⚠ ${e.message}</div>
+       <div class="placeholder"><div class="icon">🔍</div>Check the ticker symbol and try again.</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '▶ RUN MODEL';
+  }
+}
+
+function render(d) {
+  const sigStyles = {
+    BUY:  { bg: 'rgba(74,222,128,0.07)', border: 'rgba(74,222,128,0.35)',  badge: 'rgba(74,222,128,0.12)',  text: '#4ade80' },
+    SELL: { bg: 'rgba(248,113,113,0.07)', border: 'rgba(248,113,113,0.35)', badge: 'rgba(248,113,113,0.12)', text: '#f87171' },
+    HOLD: { bg: 'rgba(96,165,250,0.07)',  border: 'rgba(96,165,250,0.35)',  badge: 'rgba(96,165,250,0.12)',  text: '#60a5fa' },
+  };
+  const s = sigStyles[d.signal];
+  const updn = v => v >= 0 ? 'up' : 'dn';
+  const sign = v => v >= 0 ? '+' : '';
+
+  document.getElementById('results').innerHTML = `
+    <!-- Signal banner -->
+    <div class="signal-banner" style="background:${s.bg};border-color:${s.border};">
+      <div class="signal-badge" style="color:${s.text};background:${s.badge};border-color:${s.text};">
+        ${d.signal}
+      </div>
+      <div class="signal-info">
+        <div class="signal-title">${d.ticker} · ${d.date_range} · ${d.n_sessions} sessions</div>
+        <div class="signal-reason">${d.signal_reason}</div>
+      </div>
+    </div>
+
+    <!-- Metrics -->
+    <div class="metrics">
+      <div class="metric">
+        <div class="metric-label">Last Close</div>
+        <div class="metric-value">$${d.last_close}</div>
+        <div class="metric-sub ${updn(d.today_chg_pct)}">${sign(d.today_chg_pct)}${d.today_chg_pct}% today</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Predicted Close</div>
+        <div class="metric-value" style="color:${d.signal_color}">$${d.predicted_close}</div>
+        <div class="metric-sub ${updn(d.change_pct)}">${sign(d.change_pct)}${d.change_pct}% expected</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">MA5</div>
+        <div class="metric-value">$${d.ma5}</div>
+        <div class="metric-sub">5-day average</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">MA10</div>
+        <div class="metric-value">$${d.ma10}</div>
+        <div class="metric-sub">10-day average</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">MA20</div>
+        <div class="metric-value">$${d.ma20}</div>
+        <div class="metric-sub">20-day average</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Model R²</div>
+        <div class="metric-value">${(d.r2 * 100).toFixed(1)}%</div>
+        <div class="metric-sub">MAE $${d.mae}</div>
+      </div>
+    </div>
+
+    <!-- Chart -->
+    <div id="chart-wrap"><div id="chart"></div></div>
+
+    <!-- Feature table -->
+    <div class="table-card">
+      <div class="table-head">Feature snapshot — latest bar</div>
+      <table>
+        <thead><tr><th>Feature</th><th>Today's value</th><th>Model weight (coef)</th></tr></thead>
+        <tbody>
+          ${d.features.map(f => `
+            <tr>
+              <td>${f.name}</td>
+              <td>${f.value}</td>
+              <td style="color:${f.coef >= 0 ? 'var(--green)' : 'var(--red)'}">${f.coef >= 0 ? '+' : ''}${f.coef}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  // Render Plotly chart
+  const fig = d.chart;
+  Plotly.newPlot('chart', fig.data, fig.layout, { responsive: true, displayModeBar: false });
+}
+
+// Allow Enter key to trigger model
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('ticker').addEventListener('keydown', e => {
+    if (e.key === 'Enter') runModel();
+  });
+});
+</script>
+</body>
+</html>
