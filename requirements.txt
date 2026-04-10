@@ -4,4 +4,5 @@ pandas
 numpy
 scikit-learn
 plotly
+xgboost
 gunicorn

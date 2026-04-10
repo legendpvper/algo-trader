@@ -2,7 +2,7 @@
 AI Algorithmic Trading — Flask Web App
 =======================================
 Run:
-    pip install flask yfinance pandas numpy scikit-learn plotly
+    pip install flask yfinance pandas numpy scikit-learn plotly xgboost
     python app.py
 Then open: http://localhost:5000
 """
@@ -11,7 +11,7 @@ from flask import Flask, render_template, request, jsonify
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from sklearn.linear_model import LinearRegression
+from xgboost import XGBRegressor
 from sklearn.metrics import r2_score, mean_absolute_error
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -22,67 +22,159 @@ app = Flask(__name__)
 
 
 def fetch_ohlc(ticker: str, period: str) -> pd.DataFrame:
-    """
-    Download OHLC from yfinance and return a clean flat DataFrame.
-    Handles both old (flat) and new (MultiIndex) column formats robustly.
-    """
+    """Download OHLC and return a clean flat DataFrame."""
     raw = yf.download(ticker, period=period, auto_adjust=True, progress=False)
     if raw.empty:
         raise ValueError(f"No data found for '{ticker}'. Check the ticker symbol.")
-
-    # Flatten MultiIndex columns: ("Close", "AAPL") -> "Close"
     if isinstance(raw.columns, pd.MultiIndex):
         raw.columns = [col[0] for col in raw.columns]
-
-    # Deduplicate columns that may appear after flattening
     raw = raw.loc[:, ~raw.columns.duplicated()]
-
     needed = [c for c in ["Close", "High", "Low", "Open", "Volume"] if c in raw.columns]
     df = raw[needed].copy()
-    df = df[df["Close"].notna() & (df["Close"] > 0)]   # drop bad rows
-    df.index = pd.to_datetime(df.index)                 # ensure DatetimeIndex
+    df = df[df["Close"].notna() & (df["Close"] > 0)]
+    df.index = pd.to_datetime(df.index)
     df.sort_index(inplace=True)
     return df
 
 
-def run_model(ticker: str, window: int = 90):
-    df = fetch_ohlc(ticker, period=f"{window + 60}d")
-    df = df.tail(window + 40)
+def add_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Engineer technical indicator features on the full DataFrame.
+    Always call this before slicing — rolling windows need the full history.
+    """
+    close  = df["Close"].astype(float)
+    high   = df["High"].astype(float)
+    low    = df["Low"].astype(float)
+    volume = df["Volume"].astype(float)
 
-    if len(df) < 30:
+    # Moving averages
+    df["ma5"]  = close.rolling(5).mean()
+    df["ma10"] = close.rolling(10).mean()
+    df["ma20"] = close.rolling(20).mean()
+    df["ma50"] = close.rolling(50).mean()
+
+    # MA-derived signals
+    df["ma5_ma20_spread"] = (df["ma5"] - df["ma20"]) / close
+    df["ma10_ma50_spread"] = (df["ma10"] - df["ma50"]) / close
+    df["dist_from_ma10"]  = (close - df["ma10"]) / close
+    df["dist_from_ma20"]  = (close - df["ma20"]) / close
+
+    # Momentum
+    df["momentum_1d"] = close.pct_change(1)
+    df["momentum_5d"] = close.pct_change(5)
+    df["momentum_10d"] = close.pct_change(10)
+
+    # Volatility
+    df["volatility_5d"]  = close.pct_change().rolling(5).std()
+    df["volatility_10d"] = close.pct_change().rolling(10).std()
+    df["volatility_20d"] = close.pct_change().rolling(20).std()
+
+    # RSI (14-period)
+    delta = close.diff()
+    gain  = delta.clip(lower=0).rolling(14).mean()
+    loss  = (-delta.clip(upper=0)).rolling(14).mean()
+    rs    = gain / loss.replace(0, np.nan)
+    df["rsi"] = 100 - (100 / (1 + rs))
+
+    # MACD (12/26 EMA, signal 9)
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    df["macd"]        = ema12 - ema26
+    df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
+    df["macd_hist"]   = df["macd"] - df["macd_signal"]
+
+    # Bollinger Bands (20-period)
+    bb_mid             = close.rolling(20).mean()
+    bb_std             = close.rolling(20).std()
+    df["bb_upper"]     = bb_mid + 2 * bb_std
+    df["bb_lower"]     = bb_mid - 2 * bb_std
+    df["bb_position"]  = (close - df["bb_lower"]) / (df["bb_upper"] - df["bb_lower"]).replace(0, np.nan)
+    df["bb_width"]     = (df["bb_upper"] - df["bb_lower"]) / bb_mid
+
+    # Volume features
+    df["volume_ma10"]    = volume.rolling(10).mean()
+    df["volume_ratio"]   = volume / df["volume_ma10"].replace(0, np.nan)
+
+    # Intraday range
+    df["high_low_range"] = (high - low) / close
+
+    # Target: next day's close
+    df["next_close"] = close.shift(-1)
+
+    df.dropna(inplace=True)
+    return df
+
+
+FEATURES = [
+    "Close",
+    "ma5_ma20_spread", "ma10_ma50_spread",
+    "dist_from_ma10", "dist_from_ma20",
+    "momentum_1d", "momentum_5d", "momentum_10d",
+    "volatility_5d", "volatility_10d", "volatility_20d",
+    "rsi",
+    "macd", "macd_signal", "macd_hist",
+    "bb_position", "bb_width",
+    "volume_ratio",
+    "high_low_range",
+]
+
+FEATURE_LABELS = {
+    "Close":           "Close price",
+    "ma5_ma20_spread": "MA5−MA20 spread",
+    "ma10_ma50_spread":"MA10−MA50 spread",
+    "dist_from_ma10":  "Dist from MA10",
+    "dist_from_ma20":  "Dist from MA20",
+    "momentum_1d":     "1d momentum",
+    "momentum_5d":     "5d momentum",
+    "momentum_10d":    "10d momentum",
+    "volatility_5d":   "5d volatility",
+    "volatility_10d":  "10d volatility",
+    "volatility_20d":  "20d volatility",
+    "rsi":             "RSI (14)",
+    "macd":            "MACD",
+    "macd_signal":     "MACD signal",
+    "macd_hist":       "MACD histogram",
+    "bb_position":     "Bollinger position",
+    "bb_width":        "Bollinger width",
+    "volume_ratio":    "Volume ratio",
+    "high_low_range":  "High−low range",
+}
+
+
+def run_model(ticker: str, window: int = 90):
+    # Fetch extra history so rolling windows (MA50, RSI14) warm up properly
+    df = fetch_ohlc(ticker, period=f"{window + 120}d")
+
+    if len(df) < 60:
         raise ValueError(f"Not enough data for '{ticker}' (got {len(df)} rows).")
 
-    # Feature engineering on the FULL df first — never slice before computing rolling features
-    close = df["Close"].astype(float)
-    high  = df["High"].astype(float)
-    low   = df["Low"].astype(float)
-
-    df = df.copy()
-    df["ma5"]             = close.rolling(5).mean()
-    df["ma10"]            = close.rolling(10).mean()
-    df["ma20"]            = close.rolling(20).mean()
-    df["ma5_ma20_spread"] = (df["ma5"] - df["ma20"]) / close
-    df["momentum_5d"]     = close.pct_change(5)
-    df["dist_from_ma10"]  = (close - df["ma10"]) / close
-    df["volatility_10d"]  = close.pct_change().rolling(10).std()
-    df["high_low_range"]  = (high - low) / close
-    df["next_close"]      = close.shift(-1)
-    df.dropna(inplace=True)
+    df = add_features(df)
+    df = df.tail(window + 60)   # trim to working window after features computed
 
     if len(df) < 25:
         raise ValueError("Not enough clean rows after feature engineering.")
-
-    FEATURES = [
-        "Close", "ma5_ma20_spread", "momentum_5d",
-        "dist_from_ma10", "volatility_10d", "high_low_range",
-    ]
 
     X = df[FEATURES].values.astype(float)
     y = df["next_close"].values.astype(float)
 
     split = int(len(X) * 0.8)
-    model = LinearRegression()
-    model.fit(X[:split], y[:split])
+
+    # XGBoost — handles non-linear relationships and feature interactions
+    # that linear regression cannot capture
+    model = XGBRegressor(
+        n_estimators=300,
+        max_depth=4,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=42,
+        verbosity=0,
+    )
+    model.fit(
+        X[:split], y[:split],
+        eval_set=[(X[split:], y[split:])],
+        verbose=False,
+    )
 
     y_pred_test     = model.predict(X[split:])
     r2              = float(r2_score(y[split:], y_pred_test))
@@ -97,39 +189,39 @@ def run_model(ticker: str, window: int = 90):
         signal = "BUY"
         signal_reason = (
             f"The model predicts a <strong>+{change_pct:.2f}% gain</strong> tomorrow. "
-            f"MA5 is {'above' if float(df['ma5_ma20_spread'].iloc[-1]) > 0 else 'below'} MA20 "
-            f"and 5-day momentum is {'positive' if float(df['momentum_5d'].iloc[-1]) > 0 else 'negative'}. "
+            f"RSI is {float(df['rsi'].iloc[-1]):.1f} and MACD histogram is "
+            f"{'positive' if float(df['macd_hist'].iloc[-1]) > 0 else 'negative'}. "
             f"Entry today is recommended."
         )
     elif change_pct < -1.0:
         signal = "SELL"
         signal_reason = (
             f"The model predicts a <strong>{change_pct:.2f}% drop</strong> tomorrow. "
-            f"Downward momentum detected. Consider exiting or avoiding new positions today."
+            f"RSI is {float(df['rsi'].iloc[-1]):.1f} and downward momentum detected. "
+            f"Consider exiting or avoiding new positions today."
         )
     else:
         signal = "HOLD"
         signal_reason = (
             f"Predicted change of <strong>{change_pct:.2f}%</strong> falls within the neutral "
-            f"&plusmn;1% band. Insufficient edge to justify a trade today."
+            f"&plusmn;1% band. RSI is {float(df['rsi'].iloc[-1]):.1f}. "
+            f"Insufficient edge to justify a trade today."
         )
 
     sig_color = "#4ade80" if signal == "BUY" else "#f87171" if signal == "SELL" else "#60a5fa"
 
-    # ── Chart data: slice AFTER all features computed; convert everything to plain Python lists
+    # ── Chart data: plain Python lists, ISO date strings
     PLOT_N  = min(50, len(df))
     plot_df = df.tail(PLOT_N)
 
-    # ISO date strings — avoids any Timestamp/numpy serialisation issues
     dates   = [d.strftime("%Y-%m-%d") for d in plot_df.index]
     close_v = [round(float(v), 4) for v in plot_df["Close"]]
     ma5_v   = [round(float(v), 4) for v in plot_df["ma5"]]
     ma10_v  = [round(float(v), 4) for v in plot_df["ma10"]]
     ma20_v  = [round(float(v), 4) for v in plot_df["ma20"]]
     mom_v   = [round(float(v) * 100, 4) for v in plot_df["momentum_5d"]]
-    vol_v   = [round(float(v) * 100, 4) for v in plot_df["volatility_10d"]]
+    rsi_v   = [round(float(v), 2) for v in plot_df["rsi"]]
 
-    # Model prediction overlay — test-set portion only, intersected with plot window
     pred_series    = pd.Series(pred_all, index=df.index)
     test_idx_set   = set(df.index[split:])
     plot_pred_rows = [(d.strftime("%Y-%m-%d"), round(float(pred_series[d]), 4))
@@ -143,11 +235,11 @@ def run_model(ticker: str, window: int = 90):
     price_min = round(min(close_v + ma5_v + ma10_v + ma20_v + [predicted_close]) * 0.97, 2)
     price_max = round(max(close_v + ma5_v + ma10_v + ma20_v + [predicted_close]) * 1.03, 2)
 
-    # ── Plotly figure
+    # ── Plotly figure — 3 subplots: price, momentum, RSI
     fig = make_subplots(
         rows=3, cols=1, shared_xaxes=True,
         row_heights=[0.6, 0.2, 0.2], vertical_spacing=0.04,
-        subplot_titles=("Price & Moving Averages", "5-Day Momentum (%)", "10-Day Volatility (%)")
+        subplot_titles=("Price & Moving Averages", "5-Day Momentum (%)", "RSI (14)")
     )
 
     fig.add_trace(go.Scatter(x=dates, y=close_v, name="Close",
@@ -160,7 +252,7 @@ def run_model(ticker: str, window: int = 90):
         line=dict(color="#f87171", width=1.2, dash="dot"), mode="lines"), row=1, col=1)
 
     if pred_vals:
-        fig.add_trace(go.Scatter(x=pred_dates, y=pred_vals, name="Model prediction",
+        fig.add_trace(go.Scatter(x=pred_dates, y=pred_vals, name="XGB prediction",
             line=dict(color="#c084fc", width=1.5, dash="dash"), mode="lines", opacity=0.85),
             row=1, col=1)
 
@@ -183,9 +275,12 @@ def run_model(ticker: str, window: int = 90):
         name="Momentum", showlegend=False), row=2, col=1)
     fig.add_hline(y=0, line_color="#334155", line_width=1, row=2, col=1)
 
-    fig.add_trace(go.Scatter(x=dates, y=vol_v, fill="tozeroy",
-        fillcolor="rgba(251,191,36,0.15)", line=dict(color="#fbbf24", width=1.2),
-        name="Volatility", showlegend=False), row=3, col=1)
+    # RSI with overbought/oversold bands
+    fig.add_trace(go.Scatter(x=dates, y=rsi_v,
+        line=dict(color="#a78bfa", width=1.5),
+        name="RSI", showlegend=False), row=3, col=1)
+    fig.add_hline(y=70, line_color="#f87171", line_width=1, line_dash="dot", row=3, col=1)
+    fig.add_hline(y=30, line_color="#4ade80", line_width=1, line_dash="dot", row=3, col=1)
 
     fig.update_layout(
         paper_bgcolor="#0f172a", plot_bgcolor="#0f172a",
@@ -198,14 +293,40 @@ def run_model(ticker: str, window: int = 90):
     fig.update_yaxes(range=[price_min, price_max], tickprefix="$",
                      gridcolor="#1e293b", zerolinecolor="#334155",
                      tickfont=dict(size=10), row=1, col=1)
-    for i in (2, 3):
-        fig.update_yaxes(ticksuffix="%", gridcolor="#1e293b",
-                         zerolinecolor="#334155", tickfont=dict(size=10), row=i, col=1)
+    fig.update_yaxes(ticksuffix="%", gridcolor="#1e293b",
+                     zerolinecolor="#334155", tickfont=dict(size=10), row=2, col=1)
+    fig.update_yaxes(range=[0, 100], gridcolor="#1e293b",
+                     zerolinecolor="#334155", tickfont=dict(size=10), row=3, col=1)
     fig.update_xaxes(tickformat="%b %d", tickangle=-30, row=3, col=1)
 
     chart_json = json.loads(fig.to_json())
 
+    # Feature importance from XGBoost (score = gain)
+    importance = model.get_booster().get_score(importance_type="gain")
+    total_gain  = sum(importance.values()) or 1
+    feat_rows = []
     last = df.iloc[-1]
+    for i, feat in enumerate(FEATURES):
+        raw_val = float(last[feat])
+        # Format value sensibly
+        if feat == "Close":
+            val_str = f"${raw_val:.2f}"
+        elif feat == "rsi":
+            val_str = f"{raw_val:.1f}"
+        elif feat in ("macd", "macd_signal", "macd_hist"):
+            val_str = f"{raw_val:.3f}"
+        else:
+            val_str = f"{raw_val * 100:.2f}%"
+        imp_key = f"f{i}"
+        imp_pct = round(importance.get(imp_key, 0) / total_gain * 100, 1)
+        feat_rows.append({
+            "name":       FEATURE_LABELS.get(feat, feat),
+            "value":      val_str,
+            "importance": imp_pct,
+        })
+    # Sort by importance descending
+    feat_rows.sort(key=lambda r: r["importance"], reverse=True)
+
     return {
         "ticker":          ticker.upper(),
         "last_close":      round(last_close, 2),
@@ -220,19 +341,15 @@ def run_model(ticker: str, window: int = 90):
         "ma5":             round(float(last["ma5"]), 2),
         "ma10":            round(float(last["ma10"]), 2),
         "ma20":            round(float(last["ma20"]), 2),
+        "rsi":             round(float(last["rsi"]), 1),
+        "macd_hist":       round(float(last["macd_hist"]), 4),
         "momentum_5d":     round(float(last["momentum_5d"]) * 100, 2),
         "volatility_10d":  round(float(last["volatility_10d"]) * 100, 2),
         "date_range":      f"{df.index[0].date()} → {df.index[-1].date()}",
         "n_sessions":      len(df),
-        "features": [
-            {"name": "Close price",     "value": f"${last_close:.2f}",                         "coef": round(float(model.coef_[0]), 5)},
-            {"name": "MA5-MA20 spread", "value": f"{float(last['ma5_ma20_spread'])*100:.2f}%", "coef": round(float(model.coef_[1]), 5)},
-            {"name": "5d momentum",     "value": f"{float(last['momentum_5d'])*100:.2f}%",     "coef": round(float(model.coef_[2]), 5)},
-            {"name": "Dist from MA10",  "value": f"{float(last['dist_from_ma10'])*100:.2f}%",  "coef": round(float(model.coef_[3]), 5)},
-            {"name": "10d volatility",  "value": f"{float(last['volatility_10d'])*100:.2f}%",  "coef": round(float(model.coef_[4]), 5)},
-            {"name": "High-low range",  "value": f"{float(last['high_low_range'])*100:.2f}%",  "coef": round(float(model.coef_[5]), 5)},
-        ],
-        "chart": chart_json,
+        "model":           "XGBoost",
+        "features":        feat_rows,
+        "chart":           chart_json,
     }
 
 

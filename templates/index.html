@@ -297,7 +297,7 @@
 
 <header>
   <div class="logo">ALGO<span>TRADER</span></div>
-  <div style="font-size:12px;color:var(--text2);font-family:var(--mono);">AI · Linear Regression · Next-day prediction</div>
+  <div style="font-size:12px;color:var(--text2);font-family:var(--mono);">AI · XGBoost · Next-day prediction</div>
   <div style="margin-left:auto;display:flex;align-items:center;gap:8px;">
     <div class="status-dot"></div>
     <span class="status-label">LIVE DATA</span>
@@ -347,7 +347,7 @@
 </main>
 
 <footer>
-  AlgoTrader · Linear Regression on real market data via Yahoo Finance ·
+  AlgoTrader · XGBoost on real market data via Yahoo Finance ·
   For educational purposes only · Not financial advice
 </footer>
 
@@ -435,9 +435,14 @@ function render(d) {
         <div class="metric-sub">20-day average</div>
       </div>
       <div class="metric">
+        <div class="metric-label">RSI (14)</div>
+        <div class="metric-value" style="color:${d.rsi > 70 ? 'var(--red)' : d.rsi < 30 ? 'var(--green)' : 'var(--text0)'}">${d.rsi}</div>
+        <div class="metric-sub">${d.rsi > 70 ? 'Overbought' : d.rsi < 30 ? 'Oversold' : 'Neutral'}</div>
+      </div>
+      <div class="metric">
         <div class="metric-label">Model R²</div>
         <div class="metric-value">${(d.r2 * 100).toFixed(1)}%</div>
-        <div class="metric-sub">MAE $${d.mae}</div>
+        <div class="metric-sub">XGBoost · MAE $${d.mae}</div>
       </div>
     </div>
 
@@ -446,15 +451,22 @@ function render(d) {
 
     <!-- Feature table -->
     <div class="table-card">
-      <div class="table-head">Feature snapshot — latest bar</div>
+      <div class="table-head">Feature importance — XGBoost gain (top features drive the prediction)</div>
       <table>
-        <thead><tr><th>Feature</th><th>Today's value</th><th>Model weight (coef)</th></tr></thead>
+        <thead><tr><th>Feature</th><th>Today's value</th><th>Importance</th></tr></thead>
         <tbody>
           ${d.features.map(f => `
             <tr>
               <td>${f.name}</td>
               <td>${f.value}</td>
-              <td style="color:${f.coef >= 0 ? 'var(--green)' : 'var(--red)'}">${f.coef >= 0 ? '+' : ''}${f.coef}</td>
+              <td>
+                <div style="display:flex;align-items:center;gap:8px;justify-content:flex-end;">
+                  <div style="width:80px;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden;">
+                    <div style="width:${Math.min(f.importance,100)}%;height:100%;background:#a78bfa;border-radius:3px;"></div>
+                  </div>
+                  <span style="color:var(--text1);min-width:36px;text-align:right;">${f.importance}%</span>
+                </div>
+              </td>
             </tr>`).join('')}
         </tbody>
       </table>
