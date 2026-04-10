@@ -267,13 +267,13 @@ def backtest(df: pd.DataFrame, model, X: np.ndarray, split: int, signal_band: fl
 
 def run_model(ticker: str, window: int = 90):
     # Fetch extra history so rolling windows (MA50, RSI14) warm up properly
-    df = fetch_ohlc(ticker, period=f"{window + 120}d")
+    df = fetch_ohlc(ticker, period=f"{window + 200}d")
 
-    if len(df) < 60:
+    if len(df) < 80:
         raise ValueError(f"Not enough data for '{ticker}' (got {len(df)} rows).")
 
     df = add_features(df)
-    df = df.tail(window + 60)   # trim to working window after features computed
+    df = df.tail(window + 100)   # trim to working window after features computed
 
     if len(df) < 25:
         raise ValueError("Not enough clean rows after feature engineering.")
@@ -336,7 +336,7 @@ def run_model(ticker: str, window: int = 90):
     sig_color = "#4ade80" if signal == "BUY" else "#f87171" if signal == "SELL" else "#60a5fa"
 
     # ── Chart data: plain Python lists, ISO date strings
-    PLOT_N  = min(50, len(df))
+    PLOT_N  = min(60, len(df))
     plot_df = df.tail(PLOT_N)
 
     dates   = [d.strftime("%Y-%m-%d") for d in plot_df.index]

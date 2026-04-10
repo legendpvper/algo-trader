@@ -395,9 +395,10 @@
     <div class="ctrl-group">
       <label>History window</label>
       <select id="window">
-        <option value="60">60 trading days</option>
-        <option value="90" selected>90 trading days</option>
-        <option value="120">120 trading days</option>
+        <option value="60">60 days (~3 months)</option>
+        <option value="120">120 days (~6 months)</option>
+        <option value="252" selected>252 days (~1 year)</option>
+        <option value="504">504 days (~2 years)</option>
       </select>
     </div>
     <button class="run-btn" id="runBtn" onclick="runModel()">▶ RUN MODEL</button>
