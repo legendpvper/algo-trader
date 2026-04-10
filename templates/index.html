@@ -272,6 +272,72 @@
   }
 
   /* spinner */
+  /* ── Backtest section */
+  .bt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 1rem; }
+  .bt-card { background: var(--bg2); border-radius: var(--border-radius, 8px); padding: 12px 14px; }
+  .bt-card .lbl { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--text2); margin-bottom: 5px; }
+  .bt-card .val { font-family: var(--mono); font-size: 1.3rem; font-weight: 500; }
+  .bt-card .sub { font-size: 11px; color: var(--text2); margin-top: 2px; }
+  .signal-log {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    margin-top: .5rem;
+    table-layout: fixed;
+  }
+  .signal-log colgroup col:nth-child(1) { width: 22%; }
+  .signal-log colgroup col:nth-child(2) { width: 18%; }
+  .signal-log colgroup col:nth-child(3) { width: 20%; }
+  .signal-log colgroup col:nth-child(4) { width: 20%; }
+  .signal-log colgroup col:nth-child(5) { width: 20%; }
+  .signal-log th {
+    font-family: var(--mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--text2);
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg2);
+    font-weight: 400;
+  }
+  .signal-log th:nth-child(1) { text-align: left; }
+  .signal-log th:nth-child(2) { text-align: center; }
+  .signal-log th:nth-child(3),
+  .signal-log th:nth-child(4) { text-align: right; }
+  .signal-log th:nth-child(5) { text-align: center; }
+  .signal-log td {
+    padding: 10px 16px;
+    border-bottom: 0.5px solid var(--bg3);
+    color: var(--text1);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .signal-log td:nth-child(1) { text-align: left; color: var(--text2); letter-spacing: .02em; }
+  .signal-log td:nth-child(2) { text-align: center; }
+  .signal-log td:nth-child(3),
+  .signal-log td:nth-child(4) { text-align: right; font-variant-numeric: tabular-nums; }
+  .signal-log td:nth-child(5) { text-align: center; font-size: 15px; }
+  .signal-log tr:last-child td { border-bottom: none; }
+  .signal-log tr:hover td { background: rgba(255,255,255,0.03); }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 12px;
+    border-radius: 4px;
+    letter-spacing: .08em;
+    min-width: 52px;
+  }
+  .pill-buy  { background: rgba(74,222,128,.12);  color: #4ade80; border: 1px solid rgba(74,222,128,.25); }
+  .pill-sell { background: rgba(248,113,113,.12); color: #f87171; border: 1px solid rgba(248,113,113,.25); }
+  .pill-hold { background: rgba(96,165,250,.12);  color: #60a5fa; border: 1px solid rgba(96,165,250,.25); }
+  .tick { color: #4ade80; font-size: 16px; } .cross { color: #f87171; font-size: 16px; }
+  #eq-chart { width: 100%; height: 220px; }
+
   .spinner {
     width: 32px; height: 32px;
     border: 2px solid var(--bg3);
@@ -471,11 +537,72 @@ function render(d) {
         </tbody>
       </table>
     </div>
+
+    ${d.backtest && d.backtest.total_signals ? `
+    <div class="table-card" style="margin-bottom:1.5rem;">
+      <div class="table-head">Backtest — signal accuracy on test set (${d.backtest.total_signals} signals)</div>
+      <div style="padding:1rem 1.25rem;">
+        <div class="bt-grid">
+          <div class="bt-card">
+            <div class="lbl">Overall hit rate</div>
+            <div class="val" style="color:${d.backtest.overall_rate >= 55 ? 'var(--green)' : d.backtest.overall_rate >= 45 ? 'var(--amber)' : 'var(--red)'}">${d.backtest.overall_rate}%</div>
+            <div class="sub">${d.backtest.overall_correct} / ${d.backtest.total_signals} correct</div>
+          </div>
+          <div class="bt-card">
+            <div class="lbl">BUY accuracy</div>
+            <div class="val ${d.backtest.buy_rate >= 55 ? 'up' : 'dn'}">${d.backtest.buy_rate ?? '—'}%</div>
+            <div class="sub">${d.backtest.buy_count} signals</div>
+          </div>
+          <div class="bt-card">
+            <div class="lbl">SELL accuracy</div>
+            <div class="val ${d.backtest.sell_rate >= 55 ? 'up' : 'dn'}">${d.backtest.sell_rate ?? '—'}%</div>
+            <div class="sub">${d.backtest.sell_count} signals</div>
+          </div>
+          <div class="bt-card">
+            <div class="lbl">HOLD accuracy</div>
+            <div class="val">${d.backtest.hold_rate ?? '—'}%</div>
+            <div class="sub">${d.backtest.hold_count} signals</div>
+          </div>
+          <div class="bt-card">
+            <div class="lbl">Strategy return</div>
+            <div class="val ${d.backtest.total_return >= 0 ? 'up' : 'dn'}">${d.backtest.total_return >= 0 ? '+' : ''}${d.backtest.total_return}%</div>
+            <div class="sub">$10k → $${d.backtest.final_value.toLocaleString()}</div>
+          </div>
+        </div>
+        <div class="section-head" style="margin-bottom:.5rem;">Equity curve — $10,000 starting capital</div>
+        <div id="eq-chart"></div>
+        <div class="section-head" style="margin:1rem 0 .5rem;">Signal log — last 20 test-set days</div>
+        <div style="overflow-x:auto;">
+          <table class="signal-log">
+            <colgroup><col><col><col><col><col></colgroup>
+            <thead><tr><th>Date</th><th>Signal</th><th>Predicted Δ</th><th>Actual Δ</th><th>Correct</th></tr></thead>
+            <tbody>
+              ${d.backtest.signal_log.map(r => `
+                <tr>
+                  <td>${r.date}</td>
+                  <td><span class="pill pill-${r.signal.toLowerCase()}">${r.signal}</span></td>
+                  <td class="${r.pred_chg_pct >= 0 ? 'up' : 'dn'}">${r.pred_chg_pct >= 0 ? '+' : ''}${r.pred_chg_pct}%</td>
+                  <td class="${r.actual_chg_pct >= 0 ? 'up' : 'dn'}">${r.actual_chg_pct >= 0 ? '+' : ''}${r.actual_chg_pct}%</td>
+                  <td>${r.correct ? '<span class="tick">✓</span>' : '<span class="cross">✗</span>'}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    ` : ''}
   `;
 
   // Render Plotly chart
   const fig = d.chart;
   Plotly.newPlot('chart', fig.data, fig.layout, { responsive: true, displayModeBar: false });
+
+  // Render equity curve
+  if (d.backtest && d.backtest.equity_chart) {
+    const ef = d.backtest.equity_chart;
+    Plotly.newPlot('eq-chart', ef.data, ef.layout, { responsive: true, displayModeBar: false });
+  }
 }
 
 // Allow Enter key to trigger model

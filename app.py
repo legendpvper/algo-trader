@@ -141,6 +141,130 @@ FEATURE_LABELS = {
 }
 
 
+
+def backtest(df: pd.DataFrame, model, X: np.ndarray, split: int, signal_band: float = 1.0) -> dict:
+    """
+    Walk through the TEST SET day by day, generate a signal for each day
+    using the model's predicted next-day close, then check whether
+    the actual next-day price movement confirmed the signal.
+
+    Returns a dict with hit rates, P&L curve, and per-signal breakdown.
+    """
+    test_df = df.iloc[split:].copy()
+    X_test  = X[split:]
+
+    pred_closes = model.predict(X_test)
+    results = []
+
+    for i in range(len(test_df) - 1):   # -1 because we need actual next-day close
+        today_close  = float(test_df["Close"].iloc[i])
+        pred_close   = float(pred_closes[i])
+        actual_close = float(test_df["Close"].iloc[i + 1])   # what actually happened
+
+        pred_chg_pct   = (pred_close   - today_close) / today_close * 100
+        actual_chg_pct = (actual_close - today_close) / today_close * 100
+
+        if pred_chg_pct > signal_band:
+            signal = "BUY"
+            correct = actual_chg_pct > 0      # BUY correct if price actually went up
+        elif pred_chg_pct < -signal_band:
+            signal = "SELL"
+            correct = actual_chg_pct < 0     # SELL correct if price actually went down
+        else:
+            signal = "HOLD"
+            correct = abs(actual_chg_pct) <= signal_band  # HOLD correct if stayed flat
+
+        results.append({
+            "date":           test_df.index[i].strftime("%Y-%m-%d"),
+            "signal":         signal,
+            "pred_chg_pct":   round(pred_chg_pct, 3),
+            "actual_chg_pct": round(actual_chg_pct, 3),
+            "correct":        correct,
+        })
+
+    if not results:
+        return {}
+
+    # ── Per-signal accuracy
+    from collections import defaultdict
+    counts   = defaultdict(int)
+    correct  = defaultdict(int)
+    for r in results:
+        counts[r["signal"]] += 1
+        if r["correct"]:
+            correct[r["signal"]] += 1
+
+    def hit_rate(sig):
+        return round(correct[sig] / counts[sig] * 100, 1) if counts[sig] else None
+
+    overall_correct = sum(1 for r in results if r["correct"])
+    overall_rate    = round(overall_correct / len(results) * 100, 1)
+
+    # ── Cumulative P&L curve (simple strategy: follow every BUY/SELL signal)
+    # Start with $10,000. BUY = go long next day, SELL = go short, HOLD = stay flat.
+    capital    = 10_000.0
+    equity     = [capital]
+    eq_dates   = [results[0]["date"]]
+    position   = 0   # 0=flat, 1=long, -1=short
+
+    for r in results:
+        daily_return = r["actual_chg_pct"] / 100
+        if r["signal"] == "BUY":
+            position = 1
+        elif r["signal"] == "SELL":
+            position = -1
+        else:
+            position = 0
+        capital *= (1 + position * daily_return)
+        equity.append(round(capital, 2))
+        eq_dates.append(r["date"])
+
+    total_return = round((equity[-1] - 10_000) / 10_000 * 100, 2)
+
+    # ── Build equity curve Plotly trace (returned as JSON)
+    eq_fig = go.Figure()
+    eq_color = "#4ade80" if total_return >= 0 else "#f87171"
+    eq_fig.add_trace(go.Scatter(
+        x=eq_dates, y=equity,
+        mode="lines",
+        line=dict(color=eq_color, width=2),
+        fill="tozeroy",
+        fillcolor=f"rgba({'74,222,128' if total_return >= 0 else '248,113,113'},0.08)",
+        name="Portfolio value",
+        hovertemplate="$%{y:,.0f}<extra></extra>",
+    ))
+    eq_fig.add_hline(y=10_000, line_color="#334155", line_width=1, line_dash="dot")
+    eq_fig.update_layout(
+        paper_bgcolor="#0f172a", plot_bgcolor="#0f172a",
+        font=dict(color="#94a3b8", family="'IBM Plex Mono', monospace"),
+        margin=dict(l=60, r=20, t=20, b=40),
+        height=220,
+        showlegend=False,
+        yaxis=dict(tickprefix="$", tickformat=",.0f", gridcolor="#1e293b",
+                   zerolinecolor="#334155", tickfont=dict(size=10)),
+        xaxis=dict(tickformat="%b %d", tickangle=-30, gridcolor="#1e293b",
+                   tickfont=dict(size=10)),
+    )
+
+    # ── Signal log (last 20 for display)
+    signal_log = results[-20:]
+
+    return {
+        "overall_rate":   overall_rate,
+        "overall_correct":overall_correct,
+        "total_signals":  len(results),
+        "buy_rate":       hit_rate("BUY"),
+        "sell_rate":      hit_rate("SELL"),
+        "hold_rate":      hit_rate("HOLD"),
+        "buy_count":      counts["BUY"],
+        "sell_count":     counts["SELL"],
+        "hold_count":     counts["HOLD"],
+        "total_return":   total_return,
+        "final_value":    round(equity[-1], 2),
+        "equity_chart":   json.loads(eq_fig.to_json()),
+        "signal_log":     signal_log,
+    }
+
 def run_model(ticker: str, window: int = 90):
     # Fetch extra history so rolling windows (MA50, RSI14) warm up properly
     df = fetch_ohlc(ticker, period=f"{window + 120}d")
@@ -180,6 +304,7 @@ def run_model(ticker: str, window: int = 90):
     r2              = float(r2_score(y[split:], y_pred_test))
     mae             = float(mean_absolute_error(y[split:], y_pred_test))
     pred_all        = model.predict(X)
+    bt              = backtest(df, model, X, split)
     predicted_close = float(model.predict(X[-1].reshape(1, -1))[0])
     last_close      = float(df["Close"].iloc[-1])
     change_pct      = (predicted_close - last_close) / last_close * 100
@@ -215,6 +340,9 @@ def run_model(ticker: str, window: int = 90):
     plot_df = df.tail(PLOT_N)
 
     dates   = [d.strftime("%Y-%m-%d") for d in plot_df.index]
+    open_v  = [round(float(v), 4) for v in plot_df["Open"]]
+    high_v  = [round(float(v), 4) for v in plot_df["High"]]
+    low_v   = [round(float(v), 4) for v in plot_df["Low"]]
     close_v = [round(float(v), 4) for v in plot_df["Close"]]
     ma5_v   = [round(float(v), 4) for v in plot_df["ma5"]]
     ma10_v  = [round(float(v), 4) for v in plot_df["ma10"]]
@@ -232,8 +360,8 @@ def run_model(ticker: str, window: int = 90):
     last_date_str = plot_df.index[-1].strftime("%Y-%m-%d")
     next_date_str = (plot_df.index[-1] + pd.tseries.offsets.BDay(1)).strftime("%Y-%m-%d")
 
-    price_min = round(min(close_v + ma5_v + ma10_v + ma20_v + [predicted_close]) * 0.97, 2)
-    price_max = round(max(close_v + ma5_v + ma10_v + ma20_v + [predicted_close]) * 1.03, 2)
+    price_min = round(min(low_v  + ma5_v + ma10_v + ma20_v + [predicted_close]) * 0.97, 2)
+    price_max = round(max(high_v + ma5_v + ma10_v + ma20_v + [predicted_close]) * 1.03, 2)
 
     # ── Plotly figure — 3 subplots: price, momentum, RSI
     fig = make_subplots(
@@ -242,8 +370,12 @@ def run_model(ticker: str, window: int = 90):
         subplot_titles=("Price & Moving Averages", "5-Day Momentum (%)", "RSI (14)")
     )
 
-    fig.add_trace(go.Scatter(x=dates, y=close_v, name="Close",
-        line=dict(color="#93c5fd", width=2), mode="lines"), row=1, col=1)
+    fig.add_trace(go.Candlestick(
+        x=dates, open=open_v, high=high_v, low=low_v, close=close_v,
+        name="OHLC",
+        increasing=dict(line=dict(color="#4ade80", width=1), fillcolor="rgba(74,222,128,0.25)"),
+        decreasing=dict(line=dict(color="#f87171", width=1), fillcolor="rgba(248,113,113,0.25)"),
+    ), row=1, col=1)
     fig.add_trace(go.Scatter(x=dates, y=ma5_v, name="MA5",
         line=dict(color="#4ade80", width=1.2, dash="dot"), mode="lines"), row=1, col=1)
     fig.add_trace(go.Scatter(x=dates, y=ma10_v, name="MA10",
@@ -298,6 +430,7 @@ def run_model(ticker: str, window: int = 90):
     fig.update_yaxes(range=[0, 100], gridcolor="#1e293b",
                      zerolinecolor="#334155", tickfont=dict(size=10), row=3, col=1)
     fig.update_xaxes(tickformat="%b %d", tickangle=-30, row=3, col=1)
+    fig.update_xaxes(rangeslider_visible=False, row=1, col=1)
 
     chart_json = json.loads(fig.to_json())
 
@@ -350,6 +483,7 @@ def run_model(ticker: str, window: int = 90):
         "model":           "XGBoost",
         "features":        feat_rows,
         "chart":           chart_json,
+        "backtest":        bt,
     }
 
 
