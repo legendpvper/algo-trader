@@ -484,7 +484,16 @@ function render(d) {
       <div class="metric">
         <div class="metric-label">Predicted Close</div>
         <div class="metric-value" style="color:${d.signal_color}">$${d.predicted_close}</div>
-        <div class="metric-sub ${updn(d.change_pct)}">${sign(d.change_pct)}${d.change_pct}% expected</div>
+        <div class="metric-sub ${updn(d.change_pct)}">${sign(d.change_pct)}${d.change_pct}% · ±$${d.ci_margin}</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">95% CI Range</div>
+        <div class="metric-value" style="font-size:1rem;line-height:1.5;">
+          <span class="dn">$${d.ci_low}</span>
+          <span style="color:var(--text2);font-size:.8rem;margin:0 4px;">to</span>
+          <span class="up">$${d.ci_high}</span>
+        </div>
+        <div class="metric-sub">${d.ci_pct_low}% to ${sign(d.ci_pct_high)}${d.ci_pct_high}%</div>
       </div>
       <div class="metric">
         <div class="metric-label">MA5</div>

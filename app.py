@@ -310,6 +310,15 @@ def run_model(ticker: str, window: int = 90):
     change_pct      = (predicted_close - last_close) / last_close * 100
     today_chg_pct   = (last_close - float(df["Close"].iloc[-2])) / float(df["Close"].iloc[-2]) * 100
 
+    # ── Confidence interval via test-set residuals (95% CI = ±1.96σ)
+    residuals  = y[split:] - y_pred_test
+    resid_std  = float(np.std(residuals))
+    ci_margin  = round(1.96 * resid_std, 2)
+    ci_low     = round(predicted_close - ci_margin, 2)
+    ci_high    = round(predicted_close + ci_margin, 2)
+    ci_pct_low  = round((ci_low  - last_close) / last_close * 100, 2)
+    ci_pct_high = round((ci_high - last_close) / last_close * 100, 2)
+
     if change_pct > 1.0:
         signal = "BUY"
         signal_reason = (
@@ -395,12 +404,28 @@ def run_model(ticker: str, window: int = 90):
         marker=dict(size=[6, 12], color=sig_color, symbol=["circle", "star"])),
         row=1, col=1)
 
+    # CI shaded band at the predicted date
+    fig.add_trace(go.Scatter(
+        x=[next_date_str, next_date_str],
+        y=[ci_low, ci_high],
+        mode="markers",
+        marker=dict(size=0, color="rgba(0,0,0,0)"),
+        showlegend=False, hoverinfo="skip"), row=1, col=1)
+
+    fig.add_shape(
+        type="rect",
+        x0=last_date_str, x1=next_date_str,
+        y0=ci_low, y1=ci_high,
+        fillcolor=f"rgba({'74,222,128' if signal == 'BUY' else '248,113,113' if signal == 'SELL' else '96,165,250'},0.07)",
+        line=dict(width=0),
+        row=1, col=1)
+
     fig.add_annotation(
         x=next_date_str, y=predicted_close,
-        text=f"<b>${predicted_close:.2f}<br>{change_pct:+.1f}%</b>",
+        text=f"<b>${predicted_close:.2f}</b><br><span style=\'font-size:10px\'>${ci_low:.2f} – ${ci_high:.2f}</span>",
         showarrow=True, arrowhead=2, arrowcolor=sig_color,
-        font=dict(color=sig_color, size=12), bgcolor="#1e293b",
-        bordercolor=sig_color, ax=40, ay=-40)
+        font=dict(color=sig_color, size=11), bgcolor="#1e293b",
+        bordercolor=sig_color, ax=50, ay=-50)
 
     mom_colors = ["#4ade80" if v >= 0 else "#f87171" for v in mom_v]
     fig.add_trace(go.Bar(x=dates, y=mom_v, marker_color=mom_colors,
@@ -466,6 +491,11 @@ def run_model(ticker: str, window: int = 90):
         "predicted_close": round(predicted_close, 2),
         "change_pct":      round(change_pct, 2),
         "today_chg_pct":   round(today_chg_pct, 2),
+        "ci_margin":       ci_margin,
+        "ci_low":          ci_low,
+        "ci_high":         ci_high,
+        "ci_pct_low":      ci_pct_low,
+        "ci_pct_high":     ci_pct_high,
         "signal":          signal,
         "signal_reason":   signal_reason,
         "signal_color":    sig_color,
